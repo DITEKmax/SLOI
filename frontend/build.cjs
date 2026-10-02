@@ -1,0 +1,12 @@
+const fs=require('fs'),path=require('path'),vm=require('vm'),cp=require('child_process');
+const root=__dirname,dist=path.join(root,'dist');
+fs.mkdirSync(dist,{recursive:true});
+fs.cpSync(path.join(root,'public'),dist,{recursive:true});
+const sandbox={console};vm.createContext(sandbox);vm.runInContext(fs.readFileSync(path.join(root,'public/vendor/vue.global.js'),'utf8'),sandbox);
+const template=fs.readFileSync(path.join(root,'src/template.html'),'utf8');
+const compiled=sandbox.Vue.compile(template,{hoistStatic:false,decodeEntities:raw=>raw.replace(/&(?:amp|lt|gt|quot|apos|#39);/g,entity=>({'&amp;':'&','&lt;':'<','&gt;':'>','&quot;':'"','&apos;':"'",'&#39;':"'"}[entity]))});
+fs.writeFileSync(path.join(dist,'render.js'),'var SloiRender = (function(Vue){const _Vue=Vue;return '+compiled.toString()+';})(Vue);\n');
+const command=process.platform==='win32'?'tsc.cmd':'tsc';
+cp.execFileSync(command,['--target','ES2020','--module','none','--lib','ES2020,DOM','--strict','--skipLibCheck','--outFile',path.join(dist,'app.js'),path.join(root,'src/field.ts'),path.join(root,'src/main.ts')],{stdio:'inherit'});
+fs.copyFileSync(path.join(root,'src/style.css'),path.join(dist,'style.css'));
+console.log('SLOI frontend: templates precompiled, TypeScript checked, offline bundle ready.');

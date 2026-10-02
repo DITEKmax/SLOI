@@ -1,0 +1,11 @@
+fastapi==0.128.2
+uvicorn==0.48.0
+pydantic==2.13.4
+websockets==16.0
+numpy==2.3.5
+psutil==7.2.2
+PyYAML==6.0.3
+onnxruntime==1.24.4
+nvidia-ml-py==13.580.82
+huggingface-hub==1.16.1
+fonttools==4.63.0

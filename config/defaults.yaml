@@ -1,0 +1,82 @@
+schema: 1
+server:
+  host: 127.0.0.1
+  port: 8765
+media:
+  ffmpeg: auto
+  ffprobe: auto
+  sample_rate: 16000
+  read_seconds: 1.0
+  max_duration_hours: 24
+  allow_network_paths: false
+vad:
+  enabled: true
+  threshold: 0.35
+  negative_threshold: 0.20
+  min_speech_ms: 96
+  min_silence_ms: 500
+  padding_ms: 400
+  fallback_if_non_silent: true
+  model: models/vad/onnx/model.onnx
+processing:
+  overlap_seconds: 0.35
+  prefetch_batches: 2
+  worker_timeout_seconds: 600
+  min_oom_chunk_seconds: 4.0
+  max_oom_retries: 5
+  idle_unload_seconds: 30
+  cpu_threads: 4
+  gpu_index: 0
+telemetry:
+  interval_seconds: 1.0
+  history_seconds: 60
+storage:
+  results_retention_days: null
+  keep_debug_segments: false
+  log_max_bytes: 2097152
+  log_backup_count: 3
+ui:
+  default_theme: carbon
+  default_accent: '#c6f36b'
+  default_model: whisper
+  default_language: auto
+models:
+  gigaam:
+    runtime: onnx
+    environment: onnx
+    path: models/gigaam
+    loader_name: gigaam-v3-e2e-rnnt
+    compute_type: float32
+    quantization: null
+    batch_size: 1
+    max_chunk_seconds: 22
+    gpu_memory_limit_mb: 3000
+  qwen:
+    runtime: qwen-transformers
+    environment: transformers
+    path: models/qwen
+    compute_type: float16
+    batch_size: 1
+    max_chunk_seconds: 24
+    max_new_tokens: 512
+    attention: sdpa
+    context: ''
+  whisper:
+    runtime: faster-whisper
+    environment: whisper
+    path: models/whisper/ct2_int8_float16
+    compute_type: int8_float16
+    batch_size: 1
+    max_chunk_seconds: 28
+    beam_size: 5
+    hotwords: null
+  parakeet:
+    runtime: onnx
+    environment: onnx
+    path: models/parakeet
+    loader_name: nemo-parakeet-tdt-0.6b-v3
+    compute_type: float32
+    quantization: null
+    batch_size: 1
+    max_chunk_seconds: 12
+    gpu_memory_limit_mb: 3000
