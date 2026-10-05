@@ -66,7 +66,10 @@ class Telemetry:
         self.nvml: Any = None
         self.handle: Any = None
         self.gpu_error: str | None = None
-        self.process = psutil.Process()
+        try:
+            self.process = psutil.Process()
+        except (psutil.Error, OSError):
+            self.process = None
         self.started = time.monotonic()
         try:
             import pynvml
@@ -86,12 +89,20 @@ class Telemetry:
 
     def sample(self) -> dict[str, Any]:
         memory = psutil.virtual_memory()
-        rss = 0
-        for process in [self.process, *self.process.children(recursive=True)]:
+        rss: int | None = None
+        processes = []
+        if self.process is not None:
             try:
-                rss += process.memory_info().rss
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                pass
+                processes = [self.process, *self.process.children(recursive=True)]
+            except (psutil.Error, OSError):
+                # Child enumeration may be unavailable even when the current
+                # process can still be measured.
+                processes = [self.process]
+        for process in processes:
+            try:
+                rss = (rss or 0) + process.memory_info().rss
+            except (psutil.Error, OSError):
+                continue
         try:
             frequency = psutil.cpu_freq()
         except (OSError, NotImplementedError):
@@ -104,7 +115,7 @@ class Telemetry:
             "timestamp": time.time(), "monotonic": time.monotonic(), "cpu_utilization_pct": psutil.cpu_percent(interval=None),
             "cpu_frequency_mhz": round(frequency.current) if frequency else None,
             "system_ram_used_mb": round(memory.used / 1024**2, 1), "system_ram_total_mb": round(memory.total / 1024**2, 1),
-            "system_ram_available_mb": round(memory.available / 1024**2, 1), "process_tree_rss_mb": round(rss / 1024**2, 1),
+            "system_ram_available_mb": round(memory.available / 1024**2, 1), "process_tree_rss_mb": round(rss / 1024**2, 1) if rss is not None else None,
             "battery_percent": battery.percent if battery else None, "on_ac_power": battery.power_plugged if battery else None,
             "gpu_name": None, "gpu_available": self.handle is not None, "gpu_message": self.gpu_error,
             "gpu_utilization_pct": None, "gpu_memory_used_mb": None, "gpu_memory_total_mb": None,

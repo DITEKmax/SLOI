@@ -38,14 +38,20 @@ class Pipeline:
         beginning = time.monotonic()
         spec = self.config["models"][job["model"]]
         source_path = Path(source["path"])
+        stream_index = job.get("audio_stream_index", source["audio_stream_index"])
+        tracks = source.get("audio_tracks", [])
+        selected_track = next((track for track in tracks if track["index"] == stream_index), None)
+        if tracks and selected_track is None:
+            raise AppError("AUDIO_TRACK_MISSING", "Выбранная аудиодорожка отсутствует. Добавьте файл заново.")
+        source_channels = selected_track.get("channels") if selected_track else source.get("channels")
         warnings: list[str] = []
         if source.get("audio_stream_count", 1) > 1:
-            warnings.append(f"MULTIPLE_AUDIO_STREAMS: выбрана дорожка {source['audio_stream_index']}; остальные не смешивались.")
+            warnings.append(f"MULTIPLE_AUDIO_STREAMS: выбрана дорожка {stream_index}; остальные не смешивались.")
         if not MODEL_CARDS[job["model"]]["language_hint"] and job["language"] != "auto":
             warnings.append("LANGUAGE_HINT_NOT_SUPPORTED: пожелание языка сохранено, но runtime не принимает языковую подсказку.")
         emit(status=Status.ANALYSING, progress=None)
         stage = time.monotonic()
-        with PCMStream(source_path, source["audio_stream_index"], self.config, cancel) as stream:
+        with PCMStream(source_path, stream_index, self.config, cancel) as stream:
             detector = self.detector_factory() if self.detector_factory else None
             analysis = analyse(stream, self.config, lambda seconds: emit(analysis_seconds=seconds, elapsed_seconds=time.monotonic() - beginning), detector)
         vad_seconds = time.monotonic() - stage
@@ -92,7 +98,7 @@ class Pipeline:
 
             def prepare() -> None:
                 try:
-                    with PCMStream(source_path, source["audio_stream_index"], self.config, stop) as pcm:
+                    with PCMStream(source_path, stream_index, self.config, stop) as pcm:
                         batch: list[tuple[Unit, np.ndarray]] = []
                         for pair in extract_units(pcm, units):
                             if stop.is_set():
@@ -200,14 +206,17 @@ class Pipeline:
             "app_version": __version__, "pipeline_version": PIPELINE_VERSION, "job_id": job["id"],
             "source_file": job["name"], "source_type": source["media_type"], "source_duration_seconds": round(analysis.duration, 3),
             "source_fingerprint": job["source_fingerprint"], "source_fingerprint_kind": "sha256_size_head_tail_1MiB", "source_size_bytes": job["source_size"],
-            "audio_stream_index": source["audio_stream_index"], "detected_speech_seconds": round(analysis.speech_seconds, 3), "planned_audio_seconds": round(planned, 3),
+            "audio_stream_index": stream_index, "audio_track": selected_track,
+            "detected_speech_seconds": round(analysis.speech_seconds, 3), "planned_audio_seconds": round(planned, 3),
             "language_requested": job["language"], "language_hint_applied": bool(model_metadata.get("language_hint_supported") and job["language"] != "auto"),
             "detected_languages": dict(detected) if detected else None,
             "model": job["model"], **model_metadata,
             "started_at": job["started_at"], "completed_at": utc_now(),
             "timing": {"total_processing_seconds": round(total, 3), "vad_seconds": round(vad_seconds, 3), "model_load_seconds": round(loading_seconds, 3), "asr_stage_seconds": round(asr_seconds, 3), "inference_calls_seconds": round(inference_seconds, 3), "end_to_end_speed_x": round(analysis.duration / total, 3) if total > 0 else None, "asr_stage_speed_x": round(analysis.duration / asr_seconds, 3) if asr_seconds > 0 else None, "definition": "speed_x = source_seconds / elapsed_seconds; ASR stage includes second-pass decode and IPC; total excludes queue wait and final file write"},
             "telemetry": {"sampling_interval_seconds": self.config["telemetry"]["interval_seconds"], "memory_scope": "GPU/device-wide; RAM/system-wide; process_tree_rss may count shared pages more than once", **aggregate.summary()},
-            "processing": {"sample_rate": 16000, "channels": 1, "audio_speed": 1.0, "vad": "silero-onnx-cpu" if self.config["vad"]["enabled"] else "disabled", "vad_settings": self.config["vad"], "requested_batch_size": spec["batch_size"], "observed_batch_sizes": sorted(effective_batches), "max_chunk_seconds": spec["max_chunk_seconds"], "overlap_seconds": self.config["processing"]["overlap_seconds"], "oom_retries": retries, "oom_events": retry_events, "overlap_words_removed": deduplicated, "configuration_sha256": hashlib.sha256(json.dumps(pipeline_config, sort_keys=True).encode()).hexdigest()},
+            "processing": {"sample_rate": 16000, "channels": 1, "audio_speed": 1.0,
+                "source_channels": source_channels,
+                "vad": "silero-onnx-cpu" if self.config["vad"]["enabled"] else "disabled", "vad_settings": self.config["vad"], "requested_batch_size": spec["batch_size"], "observed_batch_sizes": sorted(effective_batches), "max_chunk_seconds": spec["max_chunk_seconds"], "overlap_seconds": self.config["processing"]["overlap_seconds"], "oom_retries": retries, "oom_events": retry_events, "overlap_words_removed": deduplicated, "configuration_sha256": hashlib.sha256(json.dumps(pipeline_config, sort_keys=True).encode()).hexdigest()},
             "warnings": warnings,
             "quality_metrics": {"wer": None, "cer": None, "ground_truth_available": False, "note": "Точность, пропуски и галлюцинации не вычисляются без эталона и проверки аудио."},
         }

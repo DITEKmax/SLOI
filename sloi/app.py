@@ -18,6 +18,7 @@ from . import __version__
 from .config import MODEL_CARDS, Config
 from .domain import AppError
 from .jobs import JobManager
+from .media import probe
 from .native import choose_files, reveal_file
 from .store import Store
 from .telemetry import Telemetry
@@ -31,11 +32,13 @@ class AddBody(StrictBody):
     source_ids: list[str] = Field(min_length=1, max_length=1000)
     model: str
     language: Literal["auto", "ru", "en"]
+    audio_stream_index: int | None = Field(default=None, ge=0, strict=True)
 
 
 class ChoiceBody(StrictBody):
     model: str
     language: Literal["auto", "ru", "en"]
+    audio_stream_index: int | None = Field(default=None, ge=0, strict=True)
 
 
 class OrderBody(StrictBody):
@@ -45,6 +48,8 @@ class OrderBody(StrictBody):
 class PreferenceBody(StrictBody):
     theme: Literal["carbon", "paper", "signal"]
     accent: str = Field(pattern=r"^#[0-9a-fA-F]{6}$")
+    default_model: Literal["gigaam", "qwen", "whisper", "parakeet"] | None = None
+    default_language: Literal["auto", "ru", "en"] | None = None
 
 
 class DropItem(StrictBody):
@@ -97,8 +102,10 @@ def create_app(config: Config, manager: JobManager | None = None) -> FastAPI:
                 return JSONResponse({"code": "CSRF_REQUIRED", "message": "Обновите страницу приложения."}, status_code=403)
         content_length = request.headers.get("content-length", "0")
         try:
-            if int(content_length) > 1024 * 1024:
-                return JSONResponse({"code": "BODY_TOO_LARGE", "message": "Загрузка содержимого медиа не поддерживается."}, status_code=413)
+            if int(content_length) < 0:
+                return Response(status_code=400)
+            if path != "/api/files/upload" and int(content_length) > 1024 * 1024:
+                return JSONResponse({"code": "BODY_TOO_LARGE", "message": "Запрос слишком большой."}, status_code=413)
         except ValueError:
             return Response(status_code=400)
         response = await call_next(request)
@@ -129,7 +136,7 @@ def create_app(config: Config, manager: JobManager | None = None) -> FastAPI:
 
     def state():
         preferences = {"theme": config["ui"]["default_theme"], "accent": config["ui"]["default_accent"], **store.preferences()}
-        return {"version": __version__, "queue": jobs.snapshot(), "telemetry": telemetry.snapshot(), "models": model_cards(), "preferences": preferences, "defaults": {"model": config["ui"]["default_model"], "language": config["ui"]["default_language"]}, "native_available": __import__("os").name == "nt"}
+        return {"version": __version__, "queue": jobs.snapshot(), "telemetry": telemetry.snapshot(), "models": model_cards(), "preferences": preferences, "defaults": {"model": preferences.get("default_model", config["ui"]["default_model"]), "language": preferences.get("default_language", config["ui"]["default_language"])}, "native_available": __import__("os").name == "nt", "upload_limits": jobs.uploads.limits}
 
     @app.get("/api/state")
     def get_state():
@@ -146,14 +153,38 @@ def create_app(config: Config, manager: JobManager | None = None) -> FastAPI:
         sources, missing = jobs.sources.match_drop([item.model_dump() for item in body.files])
         return {"sources": sources, "missing": missing}
 
+    @app.post("/api/files/upload")
+    async def browser_upload(request: Request, name: str, model: str, language: Literal["auto", "ru", "en"]):
+        jobs._validate_choice(model, language)
+        path = await jobs.uploads.receive(request, name)
+        source: dict[str, Any] | None = None
+        queued = False
+        try:
+            data = await run_in_threadpool(probe, path, config)
+            data.update(name=name, source_upload=True)
+            if await request.is_disconnected():
+                raise AppError("UPLOAD_CANCELLED", "Загрузка отменена; временная копия удалена.", 499)
+            # Queue and source registration share the scheduler lock. A crash
+            # between SQLite commits is cleaned as an orphan at the next start.
+            with jobs.lock:
+                source = store.register_source(str(path), data)
+                added = jobs.add([source["id"]], model, language)[0]
+                queued = True
+            return {"ok": True, "job_id": added["id"], "source_id": source["id"], "source": source}
+        finally:
+            if not queued:
+                await run_in_threadpool(jobs.uploads.discard, path)
+                if source:
+                    await run_in_threadpool(store.remove_source, source["id"])
+
     @app.post("/api/jobs")
     def add_jobs(body: AddBody):
-        jobs.add(body.source_ids, body.model, body.language)
-        return {"ok": True}
+        added = jobs.add(body.source_ids, body.model, body.language, audio_stream_index=body.audio_stream_index)
+        return {"ok": True, "job_ids": [job["id"] for job in added]}
 
     @app.put("/api/jobs/{job_id}")
     def change_job(job_id: str, body: ChoiceBody):
-        jobs.update(job_id, body.model, body.language)
+        jobs.update(job_id, body.model, body.language, audio_stream_index=body.audio_stream_index)
         return {"ok": True}
 
     @app.delete("/api/jobs/{job_id}")
@@ -163,8 +194,8 @@ def create_app(config: Config, manager: JobManager | None = None) -> FastAPI:
 
     @app.post("/api/jobs/{job_id}/retry")
     def retry(job_id: str):
-        jobs.retry(job_id)
-        return {"ok": True}
+        retried = jobs.retry(job_id)
+        return {"ok": True, "job_id": retried["id"]}
 
     @app.post("/api/jobs/{job_id}/relocate")
     def relocate(job_id: str, body: RelocateBody):
@@ -183,7 +214,10 @@ def create_app(config: Config, manager: JobManager | None = None) -> FastAPI:
 
     @app.put("/api/preferences")
     def preferences(body: PreferenceBody):
-        store.set_preferences(body.model_dump())
+        values = body.model_dump(exclude_none=True)
+        current = store.preferences()
+        jobs._validate_choice(values.get("default_model", current.get("default_model", config["ui"]["default_model"])), values.get("default_language", current.get("default_language", config["ui"]["default_language"])))
+        store.set_preferences(values)
         return {"ok": True}
 
     def result_path(job_id: str):

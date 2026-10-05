@@ -72,13 +72,17 @@ class Results:
         name = job.get("result_name")
         if not name:
             raise AppError("RESULT_NOT_READY", "Результат ещё не готов.", 409)
-        path = (self.directory / job["id"] / name).resolve()
-        if not path.is_relative_to(self.directory.resolve()) or not path.is_file():
+        folder = (self.directory / job["id"]).resolve()
+        path = (folder / name).resolve()
+        if not folder.is_relative_to(self.directory.resolve()) or not path.is_relative_to(folder) or not path.is_file():
             raise AppError("RESULT_MISSING", "Файл результата отсутствует.", 404)
         return path
 
     def text(self, job: dict[str, Any]) -> str:
-        content = self.path(job).read_text(encoding="utf-8")
+        try:
+            content = self.path(job).read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise AppError("RESULT_UNREADABLE", "Не удалось прочитать результат. Проверьте файл в папке результатов.", 404) from exc
         if content.startswith("---\n"):
             end = content.find("\n---\n", 4)
             if end >= 0:

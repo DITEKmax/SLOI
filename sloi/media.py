@@ -32,6 +32,18 @@ def terminate_process(process: subprocess.Popen[Any]) -> None:
             process.wait(timeout=3)
 
 
+def _track_metadata(stream: dict[str, Any]) -> dict[str, Any]:
+    tags = stream.get("tags", {})
+    return {
+        "index": stream["index"], "title": tags.get("title", ""),
+        "language": tags.get("language", "und"),
+        "default": bool(stream.get("disposition", {}).get("default")),
+        "codec": stream.get("codec_name"), "channels": stream.get("channels"),
+        "sample_rate": stream.get("sample_rate"), "duration": finite(stream.get("duration")),
+        "start_time": finite(stream.get("start_time")),
+    }
+
+
 def probe(path: Path, config: Config) -> dict[str, Any]:
     if not path.is_file():
         raise AppError("SOURCE_MISSING", "Файл недоступен: возможно, он перемещён или отключён диск.")
@@ -62,8 +74,9 @@ def probe(path: Path, config: Config) -> dict[str, Any]:
     stat = path.stat()
     return {
         "name": path.name, "duration": duration, "size": stat.st_size, "mtime_ns": stat.st_mtime_ns,
-        "media_type": "video" if any(s.get("codec_type") == "video" for s in media["streams"]) else "audio",
+        "media_type": "video" if any(s.get("codec_type") == "video" and not s.get("disposition", {}).get("attached_pic") for s in media["streams"]) else "audio",
         "audio_stream_index": selected["index"], "audio_stream_count": len(audio), "audio_codec": selected.get("codec_name"),
+        "audio_tracks": [_track_metadata(s) for s in audio],
         "sample_rate": selected.get("sample_rate"), "channels": selected.get("channels"), "fingerprint": sampled_fingerprint(path),
     }
 

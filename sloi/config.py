@@ -65,6 +65,11 @@ class Config:
                 raise ValueError("Model paths must stay inside project")
         if not re.fullmatch(r"#[0-9a-fA-F]{6}", v["ui"]["default_accent"]):
             raise ValueError("Invalid accent")
+        uploads = v["uploads"]
+        if any(type(uploads[key]) is not int or uploads[key] < 0 for key in ("max_file_bytes", "cache_quota_bytes", "min_free_bytes")):
+            raise ValueError("Upload limits must be non-negative byte counts")
+        if not 1 <= uploads["max_file_bytes"] <= uploads["cache_quota_bytes"]:
+            raise ValueError("Upload file limit must fit within cache quota")
 
     def __getitem__(self, key: str) -> Any:
         return self.values[key]

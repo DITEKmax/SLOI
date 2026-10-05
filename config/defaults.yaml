@@ -35,6 +35,10 @@ storage:
   keep_debug_segments: false
   log_max_bytes: 2097152
   log_backup_count: 3
+uploads:
+  max_file_bytes: 21474836480
+  cache_quota_bytes: 42949672960
+  min_free_bytes: 536870912
 ui:
   default_theme: carbon
   default_accent: '#c6f36b'

@@ -63,20 +63,29 @@ class Store:
         with self.lock:
             return [{**json.loads(r["payload"]), "path": r["path"]} for r in self.db.execute("SELECT * FROM sources")]
 
-    def create_job(self, source_id: str, model: str, language: str, benchmark: dict[str, Any] | None = None) -> dict[str, Any]:
+    def remove_source(self, source_id: str) -> None:
+        with self.lock, self.db:
+            self.db.execute("DELETE FROM sources WHERE id=? AND NOT EXISTS (SELECT 1 FROM jobs WHERE source_id=?)", (source_id, source_id))
+
+    def create_job(self, source_id: str, model: str, language: str, benchmark: dict[str, Any] | None = None, audio_stream_index: int | None = None) -> dict[str, Any]:
         with self.lock, self.db:
             source = self.source(source_id, include_path=False)
             position = self.db.execute("SELECT COALESCE(MAX(position),0)+1 FROM jobs").fetchone()[0]
             job_id = uuid.uuid4().hex
+            selected_index = source["audio_stream_index"] if audio_stream_index is None else audio_stream_index
+            track = next((track for track in source.get("audio_tracks", []) if track["index"] == selected_index), {})
             payload = {
-                "id": job_id, "source_id": source_id, "name": source["name"], "duration": source["duration"],
+                "id": job_id, "source_id": source_id, "name": source["name"], "duration": track.get("duration") or source["duration"],
                 "size": source["size"], "media_type": source["media_type"], "source_mtime_ns": source["mtime_ns"],
                 "source_size": source["size"], "source_fingerprint": source["fingerprint"],
+                "audio_stream_index": selected_index,
+                "audio_tracks": source.get("audio_tracks", []),
+                "source_upload": bool(source.get("source_upload")),
                 "model": model, "language": language, "created_at": utc_now(), "started_at": None, "completed_at": None,
                 "progress": None, "processed_seconds": 0.0, "planned_seconds": None, "speech_seconds": None,
                 "source_covered_seconds": 0.0, "elapsed_seconds": 0.0, "speed_x": None, "eta_seconds": None,
                 "analysis_seconds": 0.0, "speech_map": [], "speech_regions": [], "warnings": [],
-                "error": None, "result_name": None, "attempt": 1, "benchmark": benchmark,
+                "error": None, "result_name": None, "attempt": 1, "benchmark": benchmark, "cancelling": False,
             }
             self.db.execute("INSERT INTO jobs VALUES(?,?,?,?,?)", (job_id, source_id, position, Status.WAITING, json.dumps(payload, ensure_ascii=False)))
             return {**payload, "position": position, "status": Status.WAITING}
@@ -101,7 +110,7 @@ class Store:
             current = self.job(job_id)
             current.update(changes)
             status, position = current.pop("status"), current.pop("position")
-            self.db.execute("UPDATE jobs SET status=?,position=?,payload=? WHERE id=?", (status, position, json.dumps(current, ensure_ascii=False, allow_nan=False), job_id))
+            self.db.execute("UPDATE jobs SET source_id=?,status=?,position=?,payload=? WHERE id=?", (current["source_id"], status, position, json.dumps(current, ensure_ascii=False, allow_nan=False), job_id))
             return {**current, "status": status, "position": position}
 
     def reorder_waiting(self, ids: list[str]) -> None:
@@ -124,7 +133,7 @@ class Store:
         with self.lock:
             for job in self.jobs():
                 if job["status"] in ACTIVE:
-                    self.update_job(job["id"], status=Status.INTERRUPTED, error={"code": "INTERRUPTED", "message": "Обработка прервалась. Повторный запуск начнёт файл сначала."}, eta_seconds=None, speed_x=None)
+                    self.update_job(job["id"], status=Status.INTERRUPTED, error={"code": "INTERRUPTED", "message": "Обработка прервалась. Повторный запуск начнёт файл сначала."}, eta_seconds=None, speed_x=None, cancelling=False)
                     count += 1
         return count
 

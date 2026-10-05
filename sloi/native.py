@@ -15,12 +15,16 @@ _dialog_lock = threading.Lock()
 
 
 def choose_files(mode: str = "picker") -> list[str]:
+    if mode not in {"picker", "drop"}:
+        raise AppError("INVALID_DIALOG_MODE", "Неизвестный способ выбора файлов.")
     if os.name != "nt":
         raise AppError("WINDOWS_REQUIRED", "Системное окно выбора и нативная drop-зона доступны в Windows.", 409)
     if not _dialog_lock.acquire(blocking=False):
         raise AppError("DIALOG_OPEN", "Окно выбора уже открыто. Найдите его на панели задач.", 409)
     try:
-        result = subprocess.run([sys.executable, "-m", "sloi.native", mode], capture_output=True, text=True, encoding="utf-8", timeout=600, **popen_flags())
+        # Python stdout on Windows normally follows the console code page.
+        # Force UTF-8 in the child as well as the parent for Cyrillic paths.
+        result = subprocess.run([sys.executable, "-X", "utf8", "-m", "sloi.native", mode], capture_output=True, text=True, encoding="utf-8", env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}, cwd=Path(__file__).resolve().parents[1], timeout=600, **popen_flags())
         if result.returncode:
             raise AppError("NATIVE_DIALOG_FAILED", "Не удалось открыть системное окно. Повторите выбор файла.")
         paths = json.loads(result.stdout)
@@ -29,6 +33,8 @@ def choose_files(mode: str = "picker") -> list[str]:
         return paths
     except subprocess.TimeoutExpired as exc:
         raise AppError("DIALOG_TIMEOUT", "Окно выбора закрыто по тайм-ауту. Откройте его снова.") from exc
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise AppError("NATIVE_DIALOG_FAILED", "Не удалось прочитать ответ системного окна. Повторите выбор файла.") from exc
     finally:
         _dialog_lock.release()
 
@@ -38,7 +44,10 @@ def reveal_file(path: Path) -> None:
         raise AppError("WINDOWS_REQUIRED", "Открытие Проводника доступно в Windows.", 409)
     if not path.is_file():
         raise AppError("RESULT_MISSING", "Файл результата не найден.", 404)
-    subprocess.Popen(["explorer.exe", "/select,", str(path.resolve())])
+    try:
+        subprocess.Popen(["explorer.exe", "/select,", str(path.resolve())])
+    except OSError as exc:
+        raise AppError("EXPLORER_FAILED", "Не удалось открыть Проводник. Результат можно скачать из приложения.") from exc
 
 
 def windows_picker() -> list[str]:
@@ -49,7 +58,7 @@ def windows_picker() -> list[str]:
     buffer = c.create_unicode_buffer(262144)
     dialog = OPENFILENAMEW()
     dialog.lStructSize = c.sizeof(dialog)
-    dialog.lpstrFilter = "Аудио и видео\0*.wav;*.mp3;*.m4a;*.aac;*.flac;*.ogg;*.opus;*.wma;*.mp4;*.mov;*.mkv;*.webm;*.avi;*.m4v\0Все файлы\0*.*\0\0"
+    dialog.lpstrFilter = "Аудио и видео\0*.wav;*.mp3;*.m4a;*.aac;*.flac;*.ogg;*.opus;*.wma;*.mp4;*.mov;*.mkv;*.webm;*.avi;*.m4v;*.aiff;*.aif;*.mka;*.mpga\0Все файлы\0*.*\0\0"
     dialog.lpstrFile = c.cast(buffer, w.LPWSTR)
     dialog.nMaxFile = len(buffer)
     dialog.lpstrTitle = "SLOI — выбрать исходники без копирования"

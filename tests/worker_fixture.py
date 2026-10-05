@@ -16,7 +16,8 @@ for line in sys.stdin:
         emit({'id':data['id'],'ok':True,'metadata':{'runtime':'test-process-not-asr'}})
     elif data['command']=='recognize':
         shared=data['shared']
-        memory=SharedMemory(name=shared['name'],track=False)
+        options={'track':False} if sys.version_info >= (3,13) else {}
+        memory=SharedMemory(name=shared['name'],**options)
         try:
             wave=np.ndarray((shared['samples'],),dtype=np.float32,buffer=memory.buf)
             count=len(shared['slices'])
